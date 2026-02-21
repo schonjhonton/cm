@@ -1,35 +1,66 @@
+import logging
+import random
 import re
-from typing import Dict, Any
-
+from aiohttp import ClientSession, ClientTimeout, TCPConnector
+from aiohttp_socks import ProxyConnector
 from bs4 import BeautifulSoup
 
-from mediaflow_proxy.extractors.base import BaseExtractor, ExtractorError
+logger = logging.getLogger(__name__)
 
+class ExtractorError(Exception):
+    pass
 
-class MaxstreamExtractor(BaseExtractor):
+class MaxstreamExtractor:
     """Maxstream URL extractor."""
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.mediaflow_endpoint = "hls_manifest_proxy"
+    def __init__(self, request_headers: dict, proxies: list = None):
+        self.request_headers = request_headers
+        self.base_headers = {
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        self.session = None
+        self.mediaflow_endpoint = "hls_proxy"
+        self.proxies = proxies or []
+
+    def _get_random_proxy(self):
+        return random.choice(self.proxies) if self.proxies else None
+
+    async def _get_session(self):
+        if self.session is None or self.session.closed:
+            timeout = ClientTimeout(total=60, connect=30, sock_read=30)
+            proxy = self._get_random_proxy()
+            if proxy:
+                connector = ProxyConnector.from_url(proxy)
+            else:
+                connector = TCPConnector(limit=0, limit_per_host=0, keepalive_timeout=60, enable_cleanup_closed=True, force_close=False, use_dns_cache=True)
+            self.session = ClientSession(timeout=timeout, connector=connector, headers={'User-Agent': self.base_headers["user-agent"]})
+        return self.session
 
     async def get_uprot(self, link: str):
-        """Extract MaxStream URL."""
+        """Extract MaxStream URL from uprot redirect."""
+        session = await self._get_session()
         if "msf" in link:
             link = link.replace("msf", "mse")
-        response = await self._make_request(link)
-        soup = BeautifulSoup(response.text, "lxml")
+        
+        async with session.get(link) as response:
+            text = await response.text()
+        
+        soup = BeautifulSoup(text, "lxml")
         maxstream_url = soup.find("a")
         maxstream_url = maxstream_url.get("href")
         return maxstream_url
 
-    async def extract(self, url: str, **kwargs) -> Dict[str, Any]:
+    async def extract(self, url: str, **kwargs) -> dict:
         """Extract Maxstream URL."""
+        session = await self._get_session()
+        
         maxstream_url = await self.get_uprot(url)
-        response = await self._make_request(maxstream_url, headers={"accept-language": "en-US,en;q=0.5"})
+        
+        async with session.get(maxstream_url, headers={"accept-language": "en-US,en;q=0.5"}) as response:
+            text = await response.text()
 
         # Extract and decode URL
-        match = re.search(r"\}\('(.+)',.+,'(.+)'\.split", response.text)
+        match = re.search(r"\}\('(.+)',.+,'(.+)'\.split", text)
         if not match:
             raise ExtractorError("Failed to extract URL components")
 
@@ -69,3 +100,7 @@ class MaxstreamExtractor(BaseExtractor):
             "request_headers": self.base_headers,
             "mediaflow_endpoint": self.mediaflow_endpoint,
         }
+
+    async def close(self):
+        if self.session and not self.session.closed:
+            await self.session.close()
