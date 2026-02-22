@@ -2,7 +2,7 @@ import logging
 import random
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
 from aiohttp_socks import ProxyConnector
-from utils.packed import eval_solver
+from mediaflow_proxy.utils.packed import eval_solver
 
 logger = logging.getLogger(__name__)
 
